@@ -25,6 +25,7 @@ use abnf::types::{Kind, Node, Repeat, Rule, TerminalValues};
 use indexmap::map::IndexMap;
 use itertools::Itertools;
 use pretty::BoxDoc;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 mod core_rules;
@@ -38,10 +39,16 @@ impl Pretty for Node {
     fn pretty(&self) -> BoxDoc<'static> {
         use Node::*;
         match self {
-            Alternatives(nodes) => BoxDoc::intersperse(
-                nodes.iter().map(|x| x.pretty().nest(2).group()),
-                BoxDoc::space().append(BoxDoc::text("| ")),
-            ),
+            Alternatives(nodes) => {
+                // ABNF alternatives are an unordered set, while pest choice
+                // is ordered, so render them in a PEG-safe order.
+                let mut ordered: Vec<&Node> = nodes.iter().collect();
+                ordered.sort_by(|a, b| choice_order(a, b));
+                BoxDoc::intersperse(
+                    ordered.iter().map(|x| x.pretty().nest(2).group()),
+                    BoxDoc::space().append(BoxDoc::text("| ")),
+                )
+            }
             Concatenation(nodes) => BoxDoc::intersperse(
                 nodes.iter().map(|x| x.pretty()),
                 BoxDoc::space().append(BoxDoc::text("~ ")),
@@ -62,6 +69,39 @@ impl Pretty for Node {
             TerminalValues(r) => r.pretty(),
             Prose(_) => unimplemented!(),
         }
+    }
+}
+
+/// Whether the pest expression rendered from `node` can succeed without
+/// consuming any input.  In an ordered choice, such an expression shadows
+/// every alternative that follows it, and pest_derive rejects it anywhere
+/// but last.
+fn cannot_fail(node: &Node) -> bool {
+    use Node::*;
+    match node {
+        String(s) => s.as_str().is_empty(),
+        Optional(_) => true,
+        Repetition { repeat, .. } => repeat.min().unwrap_or(0) == 0,
+        Group(n) => cannot_fail(n),
+        Concatenation(v) => v.iter().all(cannot_fail),
+        Alternatives(v) => v.iter().any(cannot_fail),
+        Rulename(_) | TerminalValues(_) | Prose(_) => false,
+    }
+}
+
+/// Order alternatives for pest's ordered choice: can't-fail expressions
+/// last, and string literals longest first (a literal would otherwise
+/// shadow any alternative it is a prefix of).  Anything else keeps its
+/// written order.
+fn choice_order(a: &Node, b: &Node) -> Ordering {
+    match (cannot_fail(a), cannot_fail(b)) {
+        (false, true) => return Ordering::Less,
+        (true, false) => return Ordering::Greater,
+        _ => {}
+    }
+    match (a, b) {
+        (Node::String(x), Node::String(y)) => y.as_str().len().cmp(&x.as_str().len()),
+        _ => Ordering::Equal,
     }
 }
 

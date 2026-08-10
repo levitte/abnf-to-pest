@@ -44,3 +44,44 @@ fn incremental_without_base_is_initial() {
     assert!(rules.contains_key("rule"));
     assert_eq!(rendered_single(&rules, "rule"), "rule = { A | B }");
 }
+
+#[test]
+fn empty_alternative_renders_last() {
+    // pest implements ordered choice and pest_derive rejects an
+    // alternative that cannot fail unless it comes last:
+    //
+    //     = expression cannot fail; following choices cannot be reached
+    //
+    // The empty alternative must render at the end, whether the
+    // alternation was written in one rule or assembled with =/.
+    let direct = parse_abnf("rule = \"\" / A / B / C\n").unwrap();
+    let merged = parse_abnf("rule = \"\"\nrule =/ A / B\nrule =/ C\n").unwrap();
+    assert_eq!(
+        rendered_single(&direct, "rule"),
+        "rule = { A | B | C | ^\"\" }"
+    );
+    assert_eq!(
+        rendered_single(&merged, "rule"),
+        "rule = { A | B | C | ^\"\" }"
+    );
+}
+
+#[test]
+fn longer_string_literals_render_first() {
+    // Ordered choice also shadows later alternatives that merely extend an
+    // earlier one: with { ^"foo" | ^"foobar" }, input "foobar" matches
+    // "foo" and leaves "bar".  pest_derive accepts such a grammar without
+    // complaint, so the emitted order alone decides whether the generated
+    // parser is correct.  For plain string literals, longer-first is
+    // PEG-safe, however the alternation was written.
+    let direct = parse_abnf("rule = \"foo\" / \"foobar\"\n").unwrap();
+    let merged = parse_abnf("rule = \"foo\"\nrule =/ \"foobar\"\n").unwrap();
+    assert_eq!(
+        rendered_single(&direct, "rule"),
+        "rule = { ^\"foobar\" | ^\"foo\" }"
+    );
+    assert_eq!(
+        rendered_single(&merged, "rule"),
+        "rule = { ^\"foobar\" | ^\"foo\" }"
+    );
+}
